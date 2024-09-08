@@ -10,13 +10,19 @@ import {
   extractContractHashes,
   DeclareContractPayload,
   UniversalDetails,
+  constants,
 } from "starknet";
 import { DeployContractParams, Network } from "./types";
 import { green, red, yellow } from "./helpers/colorize-log";
 
+interface ExtendedUniversalDetails extends UniversalDetails {
+  feeToken?: "strk" | "eth";
+}
+
 interface Arguments {
   network: string;
   reset: boolean;
+  fee?: "strk" | "eth";
   [x: string]: unknown;
   _: (string | number)[];
   $0: string;
@@ -34,10 +40,16 @@ const argv = yargs(process.argv.slice(2))
     description: "Reset deployments",
     default: false,
   })
+  .option("fee", {
+    type: "string",
+    choices: ["strk", "eth"],
+    description: "Specify the fee token",
+  })
   .parseSync() as Arguments;
 
 const networkName: string = argv.network;
 const resetDeployments: boolean = argv.reset;
+const feeToken: "strk" | "eth" = argv.fee || "eth";
 
 let deployments = {};
 let deployCalls = [];
@@ -46,7 +58,7 @@ const { provider, deployer }: Network = networks[networkName];
 
 const declareIfNot_NotWait = async (
   payload: DeclareContractPayload,
-  options?: UniversalDetails
+  options?: ExtendedUniversalDetails
 ) => {
   const declareContractPayload = extractContractHashes(payload);
   try {
@@ -94,7 +106,7 @@ const deployContract_NotWait = async (payload: {
  * @param {string} params.contract - The name of the contract to deploy.
  * @param {string} [params.contractName] - The name to export the contract as (optional).
  * @param {RawArgs} [params.constructorArgs] - The constructor arguments for the contract (optional).
- * @param {UniversalDetails} [params.options] - Additional deployment options (optional).
+ * @param {ExtendedUniversalDetails} [params.options] - Additional deployment options (optional).
  *
  * @returns {Promise<{ classHash: string; address: string }>} The deployed contract's class hash and address.
  *
@@ -196,7 +208,7 @@ const deployContract = async (
       contract: compiledContractSierra,
       casm: compiledContractCasm,
     },
-    options
+    { ...options, feeToken } as ExtendedUniversalDetails
   );
 
   let randomSalt = stark.randomAddress();
@@ -223,7 +235,7 @@ const deployContract = async (
   };
 };
 
-const executeDeployCalls = async (options?: UniversalDetails) => {
+const executeDeployCalls = async (options?: ExtendedUniversalDetails) => {
   if (deployCalls.length < 1) {
     throw new Error(
       red(
@@ -233,7 +245,18 @@ const executeDeployCalls = async (options?: UniversalDetails) => {
   }
 
   try {
-    let { transaction_hash } = await deployer.execute(deployCalls, options);
+    let transactionOptions = {
+      ...options,
+      version:
+        feeToken === "strk"
+          ? constants.TRANSACTION_VERSION.V3
+          : constants.TRANSACTION_VERSION.V1,
+    };
+
+    let { transaction_hash } = await deployer.execute(
+      deployCalls,
+      transactionOptions
+    );
     console.log(green("Deploy Calls Executed at "), transaction_hash);
     if (networkName === "sepolia" || networkName === "mainnet") {
       await provider.waitForTransaction(transaction_hash);
@@ -252,6 +275,7 @@ const executeDeployCalls = async (options?: UniversalDetails) => {
     }
   }
 };
+
 const loadExistingDeployments = () => {
   const networkPath = path.resolve(
     __dirname,
